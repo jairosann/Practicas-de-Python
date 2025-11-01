@@ -435,7 +435,7 @@ class Config:
     debug_log: bool = False
 
 
-CONFIG = Config(save_path=Path("~/.rpg_saves/save.json").expanduser(), map_size=7)
+CONFIG = Config(save_path=Path("~/.rpg_saves/save.json").expanduser(), map_size=5)
 
 
 def clamp(value: int, minimum: int, maximum: int) -> int:
@@ -516,35 +516,19 @@ class Game:
         self.player: Optional[Player] = None
         self.game_map: Dict[Tuple[int, int], Location] = {}
         self.discovered: List[Tuple[int, int]] = []
-        self.start_position = (CONFIG.map_size // 2, CONFIG.map_size // 2)
         self._init_map()
         use_color = sys.stdout.isatty() and not getattr(args, "no_color", False)
         self.style = TerminalStyler(use_color)
         self.last_tip = ""
 
     def _init_map(self) -> None:
+        tiles = [TileType.TOWN, TileType.FOREST, TileType.CAVE, TileType.RUINS, TileType.LAKE]
         size = CONFIG.map_size
-        center = size // 2
         for y in range(size):
             for x in range(size):
-                if abs(x - center) <= 1 and abs(y - center) <= 1:
-                    tile = TileType.TOWN
-                elif y < center - 1:
-                    tile = TileType.FOREST
-                elif x > center + 1:
-                    tile = TileType.CAVE
-                elif y > center + 1:
-                    tile = TileType.RUINS
-                else:
-                    tile = TileType.LAKE
-                discovered = tile == TileType.TOWN
-                location = Location(position=(x, y), tile_type=tile, discovered=discovered)
-                self.game_map[(x, y)] = location
-                if discovered:
-                    self.discovered.append((x, y))
-        if self.start_position not in self.discovered:
-            self.discovered.append(self.start_position)
-            self.game_map[self.start_position].discovered = True
+                tile = tiles[(x + y) % len(tiles)]
+                self.game_map[(x, y)] = Location(position=(x, y), tile_type=tile, discovered=(x, y) == (2, 2))
+        self.discovered.append((2, 2))
 
     def run(self) -> None:
         try:
@@ -593,7 +577,7 @@ class Game:
         name = safe_input("Nombre del héroe: ") or "Aventurero"
         class_choice = self.choose_class()
         self.player = self.create_player(name, class_choice)
-        self.player.position = self.start_position
+        self.player.position = (2, 2)
         self.state = State.EXPLORATION
         self.show_tutorial()
 
@@ -612,7 +596,6 @@ class Game:
             """
             ¡Bienvenido a Eteria!
             - Usa N/S/E/O para moverte por el mapa.
-            - Pulsa E (mayúscula) o escribe "explorar" para buscar encuentros.
             - Pulsa I para abrir el inventario y equiparte.
             - Explora para encontrar enemigos, botín y misiones.
             - Visita la ciudad para curarte y comerciar.
@@ -624,44 +607,31 @@ class Game:
     def handle_exploration(self) -> None:
         assert self.player is not None
         self.render_map()
-        location = self.game_map[self.player.position]
-        in_town = location.tile_type == TileType.TOWN
-        menu = "[N]orte [S]ur [E]ste [O]este [E]xplorar [M]apa [Q]uests [I]nventario [C]arácter"
-        if in_town:
-            menu += " [P]osada [T]ienda"
-        menu += " [S]alvar [X] Salir"
-        print(menu)
-        raw_choice = safe_input("> ")
-        if raw_choice is None:
+        print("[E]xplorar [M]apa [Q]uests [I]nventario [C]arácter [T]ienda [S]alvar [X] Salir")
+        choice = safe_input("> ")
+        if choice is None:
             self.state = State.GAME_OVER
             self.save_game()
             return
-        choice = raw_choice.strip()
-        lowered = choice.lower()
-        if choice == "E" or lowered in {"explorar", "exp", "buscar"}:
+        choice = choice.lower()
+        if choice in {"n", "s", "e", "o"}:
+            self.move_player(choice)
+        elif choice == "e":
             self.try_encounter()
-        elif lowered in {"n", "s", "e", "o", "norte", "sur", "este", "oeste"}:
-            self.move_player(lowered[0])
-        elif lowered == "m":
+        elif choice == "m":
             self.render_map(full=True)
-        elif lowered == "q":
+        elif choice == "q":
             self.state = State.QUESTS
-        elif lowered == "i":
+        elif choice == "i":
             self.state = State.INVENTORY
-        elif lowered == "c":
+        elif choice == "c":
             self.state = State.CHARACTER
-        elif lowered == "p" and in_town:
-            self.visit_inn()
-        elif lowered == "t":
-            if in_town or self.testing:
-                self.state = State.SHOP
-            else:
-                print("No hay ninguna tienda aquí.")
-        elif lowered == "s":
+        elif choice == "t":
+            self.state = State.SHOP
+        elif choice == "s":
             self.save_game()
-        elif lowered == "x":
+        elif choice == "x":
             self.state = State.MAIN_MENU
-            self.save_game()
         else:
             print("Comando desconocido")
 
@@ -700,19 +670,6 @@ class Game:
             self.discovered.append((x, y))
             self.game_map[(x, y)].discovered = True
         print(f"Te mueves a {self.game_map[(x, y)].tile_type.value} ({x},{y}).")
-
-    def visit_inn(self) -> None:
-        assert self.player is not None
-        cost = 15
-        if self.player.stats.gold < cost:
-            print("La posada cuesta 15 de oro. No tienes suficiente oro.")
-            return
-        self.player.stats.gold -= cost
-        self.player.stats.hp = self.player.stats.hp_max
-        self.player.stats.mp = self.player.stats.mp_max
-        self.player.status_effects.clear()
-        print(self.style.success("Descansas en la posada y recuperas tus fuerzas."))
-        self.last_tip = "Un buen descanso mantiene a raya a los monstruos."
 
     def try_encounter(self) -> None:
         assert self.player is not None
