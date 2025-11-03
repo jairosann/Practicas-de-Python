@@ -1,45 +1,48 @@
 # batalla_tactica.py
 # Requiere: pip install colorama
 
+import os
 import random
-import sys
 import time
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Tuple
 from colorama import init, Fore, Back, Style
 
 init(autoreset=True)
 
 # ===== util =====
 
-def bar(current: int, maxv: int, size: int = 24, color_full=Fore.GREEN, color_mid=Fore.YELLOW, color_low=Fore.RED) -> str:
+def bar(current: int, maxv: int, size: int = 24,
+        color_full=Fore.GREEN, color_mid=Fore.YELLOW, color_low=Fore.RED) -> str:
     current = max(0, min(current, maxv))
-    filled = int(size * current / maxv)
-    empty = size - filled
-    if maxv == 0:
+    if maxv <= 0:
         frac_color = color_low
+        filled = 0
     else:
+        filled = int(size * current / maxv)
         frac = current / maxv
-        frac_color = color_full if frac >= 0.6 else (color_mid if frac >= 0.3 else color_low)
+        frac_color = color_full if frac >= 0.6 else (color_mid if 0.3 <= frac < 0.6 else color_low)
+    empty = size - filled
     return f"{frac_color}{'█'*filled}{Style.DIM}{'·'*empty}{Style.RESET_ALL}"
 
 def energy_bar(e: int, maxe: int, size: int = 12) -> str:
     e = max(0, min(e, maxe))
-    filled = int(size * e / maxe)
+    filled = 0 if maxe <= 0 else int(size * e / maxe)
     empty = size - filled
     return f"{Fore.CYAN}{'■'*filled}{Style.DIM}{'·'*empty}{Style.RESET_ALL}"
 
-def clamp(a, lo, hi): 
+def clamp(a, lo, hi):
     return max(lo, min(a, hi))
 
 def slow_print(s: str, delay: float = 0.01):
     for ch in s:
-        print(ch, end='', flush=True)
+        print(ch, end="", flush=True)
         time.sleep(delay)
     print()
 
 def clear():
-    print("\033[2J\033[H", end='')
+    # Funciona en Windows y Unix
+    os.system("cls" if os.name == "nt" else "clear")
 
 # ===== core =====
 
@@ -83,18 +86,18 @@ class Fighter:
 
 # ===== combate =====
 
-def calc_daño(atacante: Fighter, defensor: Fighter, base: int, multiplicador: float = 1.0) -> (int, str):
+def calc_daño(atacante: Fighter, defensor: Fighter, base: int, multiplicador: float = 1.0) -> Tuple[int, str]:
     # evasión
     if random.random() < defensor.evd:
-        return 0, "ESQUIVA"
+        return 0, f"{Style.DIM}ESQUIVA{Style.RESET_ALL}"
     # crítico
-    crit = random.random() < atacante.crit
+    es_crit = random.random() < atacante.crit
     variacion = random.uniform(0.9, 1.1)
     bruto = int((base + atacante.atk - defensor.df) * multiplicador * variacion)
     bruto = max(0, bruto)
-    if crit:
+    if es_crit:
         bruto = int(bruto * 1.5)
-    return bruto, ("CRÍTICO" if crit else "")
+    return bruto, (f"{Fore.YELLOW}CRÍTICO{Style.RESET_ALL}" if es_crit else "")
 
 def pintar_panel(j: Fighter, e: Fighter, ronda: int):
     clear()
@@ -113,7 +116,10 @@ def pintar_panel(j: Fighter, e: Fighter, ronda: int):
     if e.estado:
         print(f"  Estados: {', '.join(e.estado)}")
     print()
-    print(Style.DIM + "Acciones: [A]tacar  [D]efender  [E]special  [R]ecargar  [Q]uitar" + Style.RESET_ALL)
+    print(Style.DIM + "Acciones: [A]tacar  [D]efender  [E]special  [R]ecargar  [Q]salir" + Style.RESET_ALL)
+
+def aplicar_defensa(dmg: int, defensor: Fighter) -> int:
+    return int(dmg * 0.6) if "DEF" in defensor.estado else dmg
 
 def turno_jugador(j: Fighter, e: Fighter) -> bool:
     while True:
@@ -122,14 +128,15 @@ def turno_jugador(j: Fighter, e: Fighter) -> bool:
             return False
         if elec == 'a':
             base = 8
-            cost = 0
             dmg, tag = calc_daño(j, e, base)
+            dmg = aplicar_defensa(dmg, e)
             e.recibir(dmg)
-            slow_print(f"Atacas {Fore.YELLOW}+{dmg}{Style.RESET_ALL} {tag}")
+            slow_print(f"Atacas {Fore.GREEN}+{dmg}{Style.RESET_ALL} {tag}")
             return True
         if elec == 'd':
-            j.estado.append("DEF")
-            slow_print("Adoptas guardia. Daño entrante reducido.")
+            if "DEF" not in j.estado:
+                j.estado.append("DEF")
+            slow_print(Fore.CYAN + "Adoptas guardia. Daño entrante reducido." + Style.RESET_ALL)
             return True
         if elec == 'e':
             cost = 8
@@ -139,12 +146,13 @@ def turno_jugador(j: Fighter, e: Fighter) -> bool:
             base = 12
             mult = 1.25
             dmg, tag = calc_daño(j, e, base, mult)
+            dmg = aplicar_defensa(dmg, e)
             e.recibir(dmg)
-            slow_print(f"Especial {Fore.YELLOW}+{dmg}{Style.RESET_ALL} {tag}")
+            slow_print(f"Especial {Fore.GREEN}+{dmg}{Style.RESET_ALL} {tag}")
             return True
         if elec == 'r':
             if j.recargar():
-                slow_print("Recargas energía.")
+                slow_print(Fore.CYAN + "Recargas energía." + Style.RESET_ALL)
                 return True
             print(Fore.RED + "Sin recargas." + Style.RESET_ALL)
         else:
@@ -161,43 +169,46 @@ def turno_enemigo(e: Fighter, j: Fighter):
     if mov < 0.55:
         base = 7
         dmg, tag = calc_daño(e, j, base)
-        if "DEF" in j.estado:
-            dmg = int(dmg * 0.6)
+        dmg = aplicar_defensa(dmg, j)
         j.recibir(dmg)
         slow_print(Fore.MAGENTA + f"{e.nombre}" + Style.RESET_ALL + f" ataca {Fore.RED}-{dmg}{Style.RESET_ALL} {tag}")
     elif mov < 0.75:
-        e.estado.append("DEF")
+        if "DEF" not in e.estado:
+            e.estado.append("DEF")
         slow_print(Fore.MAGENTA + f"{e.nombre}" + Style.RESET_ALL + " se defiende.")
     else:
         if e.gastar(6):
             base = 10
             dmg, tag = calc_daño(e, j, base, 1.15)
-            if "DEF" in j.estado:
-                dmg = int(dmg * 0.6)
+            dmg = aplicar_defensa(dmg, j)
             j.recibir(dmg)
             slow_print(Fore.MAGENTA + f"{e.nombre}" + Style.RESET_ALL + f" usa técnica {Fore.RED}-{dmg}{Style.RESET_ALL} {tag}")
         else:
             base = 7
             dmg, tag = calc_daño(e, j, base)
-            if "DEF" in j.estado:
-                dmg = int(dmg * 0.6)
+            dmg = aplicar_defensa(dmg, j)
             j.recibir(dmg)
             slow_print(Fore.MAGENTA + f"{e.nombre}" + Style.RESET_ALL + f" ataca {Fore.RED}-{dmg}{Style.RESET_ALL} {tag}")
 
 def limpiar_estados(f: Fighter):
+    # DEF dura 1 turno
     if "DEF" in f.estado:
-        # defensa dura 1 turno
         f.estado = [s for s in f.estado if s != "DEF"]
 
 def intro():
     clear()
     print(f"{Back.WHITE}{Fore.BLACK}  BATALLA TÁCTICA  {Style.RESET_ALL}")
-    print(Style.DIM + "Terminal • Colorama • Python 3.13" + Style.RESET_ALL)
+    print(Style.DIM + "Terminal • Colorama • Python 3.x" + Style.RESET_ALL)
     print()
     time.sleep(0.6)
 
 def crear_combate():
-    nombre = input("Tu nombre: ").strip() or "Héroe"
+    try:
+        nombre = input("Tu nombre: ").strip()
+    except EOFError:
+        nombre = ""
+    if not nombre:
+        nombre = "Héroe"
     jugador = Fighter(
         nombre=nombre, max_hp=90, max_en=18, atk=9, df=4, crit=0.15, evd=0.08
     )
@@ -240,3 +251,4 @@ if __name__ == "__main__":
         loop()
     except KeyboardInterrupt:
         print("\nInterrumpido.")
+
