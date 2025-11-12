@@ -8,6 +8,7 @@ Uso básico:
 from __future__ import annotations
 
 import argparse
+import builtins
 import json
 import random
 import sys
@@ -544,33 +545,48 @@ class Player:
 
     @staticmethod
     def from_dict(data: Dict[str, object]) -> "Player":
-        stats_data = data["stats"]
+        stats_data = data.get("stats", {})
+        int_value = stats_data.get("int_")
+        if int_value is None:
+            int_value = stats_data.get("int", 0)
+        def_value = stats_data.get("def_")
+        if def_value is None:
+            def_value = stats_data.get("def", 0)
         stats = Stats(
-            lvl=int(stats_data["lvl"]),
-            exp=int(stats_data["exp"]),
-            hp=int(stats_data["hp"]),
-            hp_max=int(stats_data["hp_max"]),
-            mp=int(stats_data["mp"]),
-            mp_max=int(stats_data["mp_max"]),
-            str=int(stats_data["str"]),
-            int_=int(stats_data["int_"] if "int_" in stats_data else stats_data["int"]),
-            agi=int(stats_data["agi"]),
-            def_=int(stats_data["def_"] if "def_" in stats_data else stats_data["def"]),
-            gold=int(stats_data["gold"]),
+            lvl=int(stats_data.get("lvl", 1)),
+            exp=int(stats_data.get("exp", 0)),
+            hp=int(stats_data.get("hp", stats_data.get("hp_max", 1))),
+            hp_max=int(stats_data.get("hp_max", max(1, stats_data.get("hp", 1)))),
+            mp=int(stats_data.get("mp", stats_data.get("mp_max", 1))),
+            mp_max=int(stats_data.get("mp_max", max(1, stats_data.get("mp", 1)))),
+            str=int(stats_data.get("str", 0)),
+            int_=int(int_value),
+            agi=int(stats_data.get("agi", 0)),
+            def_=int(def_value),
+            gold=int(stats_data.get("gold", 0)),
         )
         equipment_data = {
             slot: Equipment.from_dict(eq_data) for slot, eq_data in data.get("equipment", {}).items()
         }
+        class_name = data.get("class_type", ClassType.WARRIOR.name)
+        if class_name not in ClassType.__members__:
+            class_name = ClassType.WARRIOR.name
+        position_data = data.get("position", (0, 0))
+        if isinstance(position_data, (list, tuple)) and len(position_data) >= 2:
+            x = int(position_data[0])
+            y = int(position_data[1])
+        else:
+            x, y = 0, 0
         player = Player(
-            name=data["name"],
-            class_type=ClassType[data["class_type"]],
+            name=str(data.get("name", "Aventurero")),
+            class_type=ClassType[class_name],
             stats=stats,
             skills=[Skill.from_dict(skill) for skill in data.get("skills", [])],
             inventory=[Item.from_dict(item) for item in data.get("inventory", [])],
             equipment=equipment_data,
             status_effects=[StatusEffect.from_dict(s) for s in data.get("status_effects", [])],
             quests=[Quest.from_dict(q) for q in data.get("quests", [])],
-            position=(int(data["position"][0]), int(data["position"][1])),
+            position=(x, y),
         )
         return player
 
@@ -646,11 +662,18 @@ class GameState:
                 stock.append(Equipment.from_dict(entry["value"]))
             else:
                 stock.append(Item.from_dict(entry["value"]))
+        state_name = data.get("state", State.MAIN_MENU.name)
+        if state_name not in State.__members__:
+            state_name = State.MAIN_MENU.name
+        discovered_positions = []
+        for pos in data.get("discovered", []):
+            if isinstance(pos, (list, tuple)) and len(pos) >= 2:
+                discovered_positions.append((int(pos[0]), int(pos[1])))
         return GameState(
-            state=State[data["state"]],
+            state=State[state_name],
             player=player,
             game_map=map_dict,
-            discovered=[(int(pos[0]), int(pos[1])) for pos in data.get("discovered", [])],
+            discovered=discovered_positions,
             day=int(data.get("day", 1)),
             turn_count=int(data.get("turn_count", 0)),
             quest_board=quest_board,
@@ -688,7 +711,7 @@ def calc_damage(attacker: Stats, defender: Stats, skill: Optional[Skill], rng: r
     base = power + int(scaling_value * 0.6)
     variance = rng.uniform(0.85, 1.0)
     damage = int(base * variance)
-    mitigation = int(defender.def_ * 0.45)
+    mitigation = int(defender.def_ * 0.3 + defender.lvl)
     damage = max(1, damage - mitigation)
     crit_chance = min(0.5, attacker.agi / 150)
     if roll_chance(rng, crit_chance):
@@ -1482,12 +1505,22 @@ class Game:
             self.quest_board.append(quest)
 
     def process_status_end_of_round(self, player: Player, enemy: Enemy) -> None:
+        player_to_remove: List[StatusEffect] = []
         for effect in list(player.status_effects):
-            self.apply_status_effect(player, effect)
+            if self.apply_status_effect(player, effect):
+                player_to_remove.append(effect)
+        for effect in player_to_remove:
+            if effect in player.status_effects:
+                player.status_effects.remove(effect)
+        enemy_to_remove: List[StatusEffect] = []
         for effect in list(enemy.status_effects):
-            self.apply_status_effect(enemy, effect)
+            if self.apply_status_effect(enemy, effect):
+                enemy_to_remove.append(effect)
+        for effect in enemy_to_remove:
+            if effect in enemy.status_effects:
+                enemy.status_effects.remove(effect)
 
-    def apply_status_effect(self, target: Player | Enemy, effect: StatusEffect) -> None:
+    def apply_status_effect(self, target: Player | Enemy, effect: StatusEffect) -> bool:
         if effect.status == StatusType.POISON:
             amount = max(1, effect.potency)
             if isinstance(target, Player):
@@ -1508,11 +1541,7 @@ class Game:
             else:
                 target.stats.hp = clamp(target.stats.hp + amount, 0, target.stats.hp_max)
         effect.duration -= 1
-        if effect.duration <= 0:
-            if isinstance(target, Player):
-                target.status_effects.remove(effect)
-            else:
-                target.status_effects.remove(effect)
+        return effect.duration <= 0
 
     def combat_victory(self, player: Player, enemy: Enemy) -> None:
         gained_exp = 20 + enemy.stats.lvl * 10
@@ -1774,6 +1803,9 @@ class Game:
         data = state.to_dict()
         save_path = CONFIG.save_path
         save_path.parent.mkdir(parents=True, exist_ok=True)
+        backup_path = save_path.with_suffix(save_path.suffix + ".bak")
+        if save_path.exists():
+            backup_path.write_bytes(save_path.read_bytes())
         with save_path.open("w", encoding="utf-8") as handle:
             json.dump(data, handle, indent=2)
         if not self.testing:
@@ -1787,8 +1819,19 @@ class Game:
             with save_path.open("r", encoding="utf-8") as handle:
                 data = json.load(handle)
         except json.JSONDecodeError:
-            print("Archivo de guardado corrupto.")
-            return False
+            backup_path = save_path.with_suffix(save_path.suffix + ".bak")
+            if backup_path.exists():
+                save_path.write_bytes(backup_path.read_bytes())
+                try:
+                    with backup_path.open("r", encoding="utf-8") as handle:
+                        data = json.load(handle)
+                except json.JSONDecodeError:
+                    print("Archivo de guardado corrupto.")
+                    return False
+                print("Archivo de guardado restaurado desde copia de seguridad.")
+            else:
+                print("Archivo de guardado corrupto.")
+                return False
         state = GameState.from_dict(data)
         self.state = State.EXPLORATION
         self.player = state.player
@@ -2001,11 +2044,21 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
     parser.add_argument("--debug", action="store_true", help="Activa mensajes debug")
     parser.add_argument("--no-color", action="store_true", dest="no_color", help="Desactiva color ANSI")
     parser.add_argument("--test", action="store_true", help="Ejecuta pruebas de humo")
+    parser.add_argument("--quiet", action="store_true", help="Desactiva salida estándar")
     return parser.parse_args(list(argv) if argv is not None else None)
+
+
+def disable_prints() -> None:
+    def _noop(*_: object, **__: object) -> None:
+        return None
+
+    builtins.print = _noop  # type: ignore[assignment]
 
 
 def main(argv: Optional[Iterable[str]] = None) -> None:
     args = parse_args(argv)
+    if getattr(args, "quiet", False):
+        disable_prints()
     if args.test:
         run_tests(args)
         return
